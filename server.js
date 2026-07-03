@@ -1,4 +1,4 @@
-// DawaiRead Gemini Proxy
+ // DawaiRead Gemini Proxy
 // Holds GEMINI_API_KEY server-side. The Android app calls this endpoint
 // instead of calling Gemini directly, so the key never ships in the APK.
 
@@ -14,17 +14,21 @@ app.use((req, res, next) => {
 });
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = 'gemini-2.5-flash'; // pin to a GA model, not preview
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 
-// Simple shared-secret check so randos who find your Cloud Run URL can't
+// Simple shared-secret check so randos who find your Render URL can't
 // spend your Gemini quota. Set PROXY_AUTH_TOKEN as a second env var and
 // put the same value in the app's Settings > Auth token field.
 const PROXY_AUTH_TOKEN = process.env.PROXY_AUTH_TOKEN;
 
-app.post('/scan', async (req, res) => {
+// Transparent passthrough: the Android app's interceptor builds real Gemini
+// REST requests (e.g. POST /v1beta/models/gemini-2.5-flash:generateContent)
+// and just swaps the hostname to this proxy. So we mirror that exact path
+// shape, inject the real key server-side, forward to Gemini, and return
+// Gemini's response untouched. This means the key never ships in the APK,
+// but the app's existing request-building code doesn't need to change.
+app.post(/^\/v1beta\/models\/.+/, async (req, res) => {
   try {
-    // auth check
     const incomingToken = req.headers['authorization']?.replace('Bearer ', '');
     if (!PROXY_AUTH_TOKEN || incomingToken !== PROXY_AUTH_TOKEN) {
       console.log(`[AUTH FAIL] expected token starting with "${PROXY_AUTH_TOKEN?.slice(0,6)}...", got "${incomingToken?.slice(0,6) || 'NONE'}..."`);
@@ -35,63 +39,24 @@ app.post('/scan', async (req, res) => {
       return res.status(500).json({ error: 'Server misconfigured: GEMINI_API_KEY not set' });
     }
 
-    const { imageBase64, mimeType } = req.body;
-    if (!imageBase64) {
-      return res.status(400).json({ error: 'imageBase64 is required' });
-    }
+    const targetUrl = `${GEMINI_BASE}${req.path}?key=${GEMINI_API_KEY}`;
+    console.log(`[FORWARDING] -> ${req.path}`);
 
-    const prompt = `You are reading an Indian medicine strip or handwritten prescription.
-Extract ONLY what is printed or written — do not infer or add anything.
-Return strict JSON with this exact shape, nothing else, no markdown fences:
-{
-  "drug_name": string,
-  "strength": string,
-  "dosage_qty": string,
-  "raw_timing_text": string,
-  "printed_warnings": string,
-  "confidence": number
-}
-confidence is 0-100, your certainty in the overall extraction.
-If a field isn't visible or legible, use an empty string for that field.`;
-
-    const geminiRes = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
+    const geminiRes = await fetch(targetUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: prompt },
-            { inline_data: { mime_type: mimeType || 'image/jpeg', data: imageBase64 } }
-          ]
-        }],
-        generationConfig: {
-          responseMimeType: 'application/json'
-        }
-      })
+      body: JSON.stringify(req.body)
     });
 
+    const data = await geminiRes.text(); // pass through raw, whatever shape Gemini returns
+
     if (!geminiRes.ok) {
-      const errText = await geminiRes.text();
-      console.error('Gemini API error:', geminiRes.status, errText);
-      return res.status(502).json({ error: 'Gemini API call failed', detail: errText });
+      console.error('Gemini API error:', geminiRes.status, data);
     }
 
-    const data = await geminiRes.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!text) {
-      return res.status(502).json({ error: 'No content returned from Gemini' });
-    }
-
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch (e) {
-      console.error('Failed to parse Gemini JSON output:', text);
-      return res.status(502).json({ error: 'Malformed extraction output', raw: text });
-    }
-
-    return res.json(parsed);
+    res.status(geminiRes.status);
+    res.set('Content-Type', 'application/json');
+    return res.send(data);
 
   } catch (err) {
     console.error('Proxy error:', err);
