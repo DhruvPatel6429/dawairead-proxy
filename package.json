@@ -1,0 +1,15 @@
+{
+  "name": "dawairead-proxy",
+  "version": "1.0.0",
+  "description": "Secure server-side proxy for DawaiRead's Gemini API calls",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
