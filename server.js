@@ -7,6 +7,12 @@ const app = express();
 
 app.use(express.json({ limit: '15mb' })); // images as base64 can be large
 
+// Log every incoming request so we can see what's actually arriving
+app.use((req, res, next) => {
+  console.log(`[REQUEST] ${req.method} ${req.path} | auth header present: ${!!req.headers['authorization']}`);
+  next();
+});
+
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = 'gemini-2.5-flash'; // pin to a GA model, not preview
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
@@ -21,6 +27,7 @@ app.post('/scan', async (req, res) => {
     // auth check
     const incomingToken = req.headers['authorization']?.replace('Bearer ', '');
     if (!PROXY_AUTH_TOKEN || incomingToken !== PROXY_AUTH_TOKEN) {
+      console.log(`[AUTH FAIL] expected token starting with "${PROXY_AUTH_TOKEN?.slice(0,6)}...", got "${incomingToken?.slice(0,6) || 'NONE'}..."`);
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
